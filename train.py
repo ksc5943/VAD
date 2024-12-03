@@ -2,50 +2,55 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from dataset import VADDataset
 from model import VADClipModel
-from dataset import VADDataset, load_data
+import numpy as np
+import torch.nn.functional as F
+from sklearn.metrics import mean_squared_error
 
-def train_model(model, loader, optimizer, center_criterion, class_criterion, device, epochs=5):
+class RMSELoss(nn.Module):
+    def __init__(self):
+        super(RMSELoss, self).__init__()
+
+    def forward(self, y_pred, y_true):
+        return torch.sqrt(mean_squared_error(y_pred.cpu().detach().numpy(), y_true.cpu().detach().numpy()))
+
+def train_model(model, train_loader, optimizer, criterion_center, criterion_class, device):
     model.train()
-    for epoch in range(epochs):
-        total_loss = 0
-        for waveform, center_sets, labels in loader:
-            waveform, center_sets, labels = waveform.to(device), center_sets.to(device), labels.to(device)
+    running_loss = 0.0
+    for waveforms, centers in train_loader:
+        waveforms = waveforms.to(device)
+        centers = centers.to(device)
+        
+        optimizer.zero_grad()
+        
+        center_pred, class_pred = model(waveforms)
+        loss_center = criterion_center(center_pred.squeeze(), centers)
+        loss_class = criterion_class(class_pred, centers)
+        loss = loss_center + loss_class
+        
+        loss.backward()
+        optimizer.step()
+        
+        running_loss += loss.item()
+        
+    return running_loss / len(train_loader)
 
-            optimizer.zero_grad()
-            pred_center, pred_class = model(waveform)
-            mask = (center_sets != -1.0)  
+def get_train_loader(data_dir, txt_dir, batch_size=32):
+    dataset = VADDataset(data_dir, txt_dir)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-            loss_center = center_criterion(pred_center[mask], center_sets[mask])
-            loss_class = class_criterion(pred_class, labels)
-            loss = loss_center + loss_class
-
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-
-        print(f"Epoch {epoch + 1}/{epochs}, Loss: {total_loss / len(loader)}")
-
-def predict_model(model, loader, device, output_path="my_submission.csv"):
-    model.eval()
-    predictions = []
-
-    with torch.no_grad():
-        for waveform, _, _ in loader:
-            waveform = waveform.to(device)
-            pred_center, pred_class = model(waveform)
-            pred_class = torch.argmax(pred_class, dim=1)
-
-            for center, cls in zip(pred_center.cpu().numpy(), pred_class.cpu().numpy()):
-                if cls == 3:  
-                    predictions.append(center)
-                else:
-                    predictions.append(-1.0)
-
-    import pandas as pd
-    df = pd.DataFrame({
-        "Id": list(range(len(predictions))),
-        "Center": np.array(predictions)
-    })
-    df.to_csv(output_path, index=False)
-    print(f"Predictions saved to {output_path}")
+def train():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = VADClipModel(device).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    
+    criterion_center = RMSELoss()
+    criterion_class = nn.CrossEntropyLoss()
+    train_loader = get_train_loader('data/train/wav160', 'data/train/txt')
+    
+    for epoch in range(10):  # Train for 10 epochs
+        train_loss = train_model(model, train_loader, optimizer, criterion_center, criterion_class, device)
+        print(f'Epoch {epoch+1}/{10}, Loss: {train_loss}')
+    
+    return model
