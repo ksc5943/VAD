@@ -1,53 +1,49 @@
 import os
-import torchaudio
 import torch
 from torch.utils.data import Dataset
-from torchvision import transforms
+from torchaudio import load
 
 class VADDataset(Dataset):
-    def __init__(self, wav_paths, center_sets, labels, transform=None):
-        self.wav_paths = wav_paths
-        self.center_sets = center_sets
-        self.labels = labels
-        self.transform = transform
+    def __init__(self, wav_dir, txt_dir=None, processor=None, is_test=False):
+        self.wav_dir = wav_dir
+        self.txt_dir = txt_dir
+        self.processor = processor
+        self.is_test = is_test
+
+        self.file_paths = []
+        self.labels = []
+        self.load_data()
+
+    def load_data(self):
+        for root, _, files in os.walk(self.wav_dir):
+            for file in files:
+                if file.endswith('.wav'):
+                    file_path = os.path.join(root, file)
+                    self.file_paths.append(file_path)
+                    
+                    if self.txt_dir:
+                        txt_file = os.path.join(self.txt_dir, file.replace('.wav', '.txt'))
+                        if os.path.exists(txt_file):
+                            with open(txt_file, 'r') as f:
+                                content = f.read()
+                                onset, offset, sound_class = content.split('\t')
+                                if sound_class == 'speech':
+                                    center = (float(onset) + float(offset)) / 2.0
+                                    self.labels.append(center)
+                                else:
+                                    self.labels.append(-1.0)
+                    else:
+                        self.labels.append(-1.0)
 
     def __len__(self):
-        return len(self.wav_paths)
+        return len(self.file_paths)
 
     def __getitem__(self, idx):
-        waveform, sample_rate = torchaudio.load(self.wav_paths[idx])
-        
-        if self.transform:
-            waveform = self.transform(waveform)
-        
+        file_path = self.file_paths[idx]
         label = self.labels[idx]
-        center = self.center_sets[idx]
-
-        return waveform, center, label
-
-def load_data(data_dir, has_txt=True):
-    wav_paths = []
-    center_sets = []
-    labels = []
-    
-    for root, _, files in os.walk(data_dir):
-        for file in files:
-            if file.endswith(".wav"):
-                wav_path = os.path.join(root, file)
-                txt_path = wav_path.replace('.wav', '.txt')
-                
-                if has_txt and os.path.exists(txt_path):
-                    with open(txt_path, "r") as f:
-                        content = f.read().split("\t")
-                        onset, offset, sound_class = float(content[0]), float(content[1]), content[2]
-                        center = (onset + offset) / 2.0 if sound_class == "speech" else -1.0
-                        label = {"silence": 0, "car": 1, "dog": 2, "speech": 3}[sound_class]
-                else:
-                    center = -1.0
-                    label = 0  
-
-                wav_paths.append(wav_path)
-                center_sets.append(center)
-                labels.append(label)
-    
-    return wav_paths, center_sets, labels
+        waveform, sample_rate = load(file_path)
+        
+        if self.processor:
+            waveform = self.processor(waveform)
+        
+        return waveform, label
