@@ -1,32 +1,30 @@
 import torch
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from dataset import load_data, VADDataset
-from model import VADClipModel
-from train import train_model, predict_model
+import torch.nn as nn
+import clip
 
-def main():
-    train_dir = "data/train"
-    test_dir = "data/test"
+class VADClipModel(nn.Module):
+    def __init__(self, num_classes=4, device="cuda"):
+        super(VADClipModel, self).__init__()
+        self.device = device
+        self.clip_model, self.preprocess = clip.load("ViT-B/32", device)
+        self.waveform_fc = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=3, stride=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(256),  
+            nn.Flatten()
+        )
 
-    train_files, train_centers, train_labels = load_data(train_dir)
-    test_files, _, _ = load_data(test_dir, has_txt=False)  # 테스트 데이터는 txt 없음
+        self.fc_center = nn.Linear(512, 1)  
+        self.fc_class = nn.Linear(512, num_classes)
 
-    train_dataset = VADDataset(train_files, train_centers, train_labels, transform=None)
-    test_dataset = VADDataset(test_files, [-1.0] * len(test_files), [0] * len(test_files), transform=None)
+    def forward(self, x):
+        waveform_embedding = self.waveform_fc(x).unsqueeze(0)  
+        
+        image_features = self.clip_model.encode_image(waveform_embedding)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=32)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = VADClipModel().to(device)
-
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    center_criterion = torch.nn.MSELoss()
-    class_criterion = torch.nn.CrossEntropyLoss()
-
-    train_model(model, train_loader, optimizer, center_criterion, class_criterion, device)
-    predict_model(model, test_loader, device)
-
-if __name__ == "__main__":
-    main()
+        center_pred = self.fc_center(image_features).squeeze()
+        class_pred = self.fc_class(image_features)
+        
+        return center_pred, class_pred
