@@ -5,10 +5,8 @@ import pandas as pd
 import numpy as np
 
 def main():
-    # Train model
     model = train()
     
-    # Prediction on test data
     model.eval()
     test_dataset = VADDataset('data/test/wav160')
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
